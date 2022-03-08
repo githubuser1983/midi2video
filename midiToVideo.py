@@ -216,7 +216,7 @@ def make_video(imgs2Notes,pitchSet,volumeSet,videoname="./opencv_videos/video.av
             #ff = FF(nn=[(volume//64)*m+k,(pitch//64)*m+k,2],m=m,k=k,aa=[(volume+pitch)/x*np.sin(t*np.pi*2/N)/2.0 for x in [128,128,128]])
             #img = draw_curve(img,ff,(x,y),(0,0,0),rr=10,number_of_points = 1000) # 011.png
             
-            img = draw_circle(img,pp=(x,y), color = compute_color(pitch,volume,t,N,noteCounter,lN), radius=int((volume+pitch)//8))
+            img = draw_circle(img,pp=(x,y), color = compute_color(pitch,volume,t,N,noteCounter,lN), radius=max(1,int(np.abs((volume+pitch)//4*np.cos(2*np.pi*t/N)))))
             noteCounter += 1
         #labeled_img = color_img(img)
         #imgs.append(labeled_img)
