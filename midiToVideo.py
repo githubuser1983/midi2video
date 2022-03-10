@@ -2,7 +2,12 @@ import numpy as np
 import cv2 as cv
 # Create a black image
 #img = np.ones((512,512,3), np.uint8)*128 # gray background
+from sage.all import *
+import numpy as np
 
+import pandas,sys
+
+import statsmodels.api as sm
 #print(img)
 # Draw a diagonal blue line with thickness of 5 px
 #cv.line(img,(0,0),(511,511),(255,0,0),5)
@@ -27,29 +32,36 @@ def xml_to_list(xml):
     score = []
     for part in xml_data.parts:
         parts = []
-        for note in part.recurse().notesAndRests:
-            if note.isRest:
-                start = note.offset
-                duration = float(note.quarterLength)/4.0
+        print(part)
+        for note in part.flat.notesAndRests:
+            if type(note)==m21.note.Rest:
+                print("rest", note, note.duration.quarterLength)
+                duration = float(note.duration.quarterLength)
                 vol = 32 #note.volume.velocity
-                pitches= tuple([-1])
-                parts.append(tuple([pitches,duration,vol,1]))
+                pitches= tuple([64])
+                parts.append(tuple([float(note.offset),pitches,duration,vol,1]))
             elif type(note)==m21.chord.Chord:
+                print("chord ",note,note.duration.quarterLength)
                 pitches = sorted([e.pitch.midi for e in note]) # todo: think about chords
-                vol = int(note[0].volume.velocity)
-                duration = float(note.duration.quarterLength)/4.0
-                parts.append(tuple([tuple(pitches),duration,vol,0]))
+                vol = note[0].volume.velocity
+                if vol is None:
+                    vol = int(note[0].volume.realized * 127)
+                else:
+                    vol = int(vol)    
+                duration = float(note.duration.quarterLength)
+                parts.append(tuple([float(note.offset),tuple(pitches),duration,vol,0]))
             else:
-                #print(note)
+                print("note", note,note.duration.quarterLength)
                 start = note.offset
-                duration = float(note.quarterLength)/4.0
+                duration = float(note.quarterLength)
                 pitches = tuple([note.pitch.midi])
                 #print(pitch,duration,note.volume)
                 vol = note.volume.velocity
                 if vol is None:
                     vol = int(note.volume.realized * 127)
-                parts.append(tuple([pitches,duration,vol,0]) )
-        score.append(parts)        
+                parts.append(tuple([float(note.offset),pitches,duration,vol,0]) )
+        score.append(parts) 
+    print( [ len(part) for part in score])           
     return score
 
 
@@ -79,8 +91,9 @@ def FF(nn = [1,3],m=2, k=1, aa=[1,2]):
     else:
         return None
 
-def draw_curve(img, ff, mm, color, rr=120,number_of_points = 100):
+def draw_curve(img, ff, mm, color, rr=120,number_of_points = 100,return_points = False):
 
+    points = []
     def compute_point(ff,k,start,step,rr,mm):
         t = start+k*step
         z = ff(t)
@@ -102,8 +115,10 @@ def draw_curve(img, ff, mm, color, rr=120,number_of_points = 100):
         x,y = compute_point(ff,k,start,step,rr,mm)
         x2,y2 = compute_point(ff,k+1,start,step,rr,mm)
         #print(x,y)
-        #
+        points.append((x,y))
         img = draw_line(img, (x,y),(x2,y2), color=color)
+    points.append((x2,y2))    
+    if return_points: return img,points
     return img
 
 
@@ -127,32 +142,42 @@ def color_img(img):
 
 
 def getImgNrs(start_duration,end_duration,bpm,fps):
-    N_img_start = int(np.floor(4*fps*60*start_duration/bpm))
-    N_img_end = int(np.ceil(4*fps*60*end_duration/bpm))
+    N_img_start = int(np.round(fps*60*start_duration/(bpm),0))
+    N_img_end = int(np.round(fps*60*end_duration/bpm,0))
     return (N_img_start,N_img_end)
     
 def convertScore(scores,bpm=70,fps=25,verbose=False):
     #determine max durations:
-    maxDurs = []
+    maxDurs = [0 for k in range(len(scores))]
+    startsAndDurs = [0 for k in range(len(scores))]
     pitchSet = set([])
     volumeSet = set([])
+    partCounter = 0 
     for part in scores:
-        maxDurs.append(0)
         for note in part:
-            pitches, duration, volume, rest = note
-            maxDurs[-1] += duration
-    maxDur = int(np.ceil(max(maxDurs)))
+            start,pitches, duration, volume, rest = note
+            maxDurs[partCounter] += duration
+            if startsAndDurs[partCounter] < start+duration:
+                startsAndDurs[partCounter] = start+duration 
+        partCounter+=1    
+            
+    maxDur = np.max(startsAndDurs)
+    print(startsAndDurs)
     print(maxDur)
-    Nimgs = int(np.floor(4*60*fps*maxDur/bpm))
+    print(bpm)
+    Nimgs = int(np.round(60*fps*maxDur/bpm,0))
+    print(Nimgs)
     imgs2Notes = dict([])
     #fill dictionary with notes per image
     for part in scores:
         dur = 0
         for note in part:
-            pitches, duration, volume, rest = note
-            pitchSet.add(pitches[0])
+            start,pitches, duration, volume, rest = note
+            print(start,pitches,duration,volume,rest)
+            for pitch in pitches:
+                pitchSet.add(pitch)
             volumeSet.add(volume)
-            start_img, end_img = getImgNrs(start_duration=dur,end_duration = dur+duration,bpm=bpm,fps=fps)
+            start_img, end_img = getImgNrs(start_duration=start,end_duration = start+duration,bpm=bpm,fps=fps)
             if verbose: print(note,start_img,end_img)
             for k in range(start_img,end_img+1):
                 if k in imgs2Notes.keys():
@@ -177,12 +202,12 @@ def create_video(imgs,videoname="./opencv_videos/video.avi",fps=25):
     return video
 
 def compute_color(pitch,volume,t,N,noteCounter,lN,start_img,end_img):
-    tScaled = (t-start_img)/(end_img-start_img)
+    tScaled = (t-start_img)/(end_img-start_img+1)
     return (int(tScaled*pitch*2*np.sin(2*np.pi*t/N)),int(tScaled*volume*2*np.sin(2*np.pi*t/N)),int(tScaled*(noteCounter/lN)*128))
 
 def compute_radius(pitch,volume,t,N,noteCounter,lN,start_img,end_img):
-    tScaled = (t-start_img)/(end_img-start_img)
-    return max(1,int(tScaled*np.abs((volume+pitch)//4*np.cos(2*np.pi*t/N))))
+    tScaled = (t-start_img)/(end_img-start_img+1)
+    return max(1,int(tScaled*np.abs((volume)*np.cos(2*np.pi*t/N))))
 
 #!/usr/bin/python
 
@@ -211,6 +236,7 @@ def draw_voronoi(img, subdiv,color) :
     ( facets, centers) = subdiv.getVoronoiFacetList([])
 
     r,g,b = color
+
     
     lf = len(facets)
 
@@ -228,7 +254,6 @@ def draw_voronoi(img, subdiv,color) :
         cv.circle(img, (centers[i][0], centers[i][1]), 3, (0, 0, 0), cv.FILLED, cv.LINE_AA, 0)
     return img    
 
-    
 def make_video_with_circles(imgs2Notes,pitchSet,volumeSet,videoname="./opencv_videos/video.avi",fps=25,verbose=False):
     fourcc = cv.VideoWriter_fourcc(*"X264") 
     height,width = 512,512
@@ -251,56 +276,70 @@ def make_video_with_circles(imgs2Notes,pitchSet,volumeSet,videoname="./opencv_vi
     dp = Mp-mp
     if dp ==0:
         dp = 1        
-    dx = 0
-    dy = 0
+    dx = 10
+    dy = 10
     breite = 512-2*dx
     hoehe = 512-2*dy
-    img = np.ones((512,512,3), np.uint8)*255 # white background
+    img = np.ones((512,512,3), np.uint8)*0 # white background
     rb0 = np.random.randint(1,breite)
     rh0 = np.random.randint(1,hoehe)
+    
+    pitchList = sorted(list(pitchSet))
+    
+    X0,invPitchDict = getCoordinatesOfPitchList(pitchList,dx,breite)
+    
+    
     for t in range(N):
-        #img = np.ones((512,512,3), np.uint8)*255 # white background
-        rb = np.random.randint(1,breite)
-        rh = np.random.randint(1,hoehe)
+        img = np.ones((512,512,3), np.uint8)*0 # white background
+        rb = np.random.randint(-5*dx,5*dx)
+        rh = np.random.randint(-5*dy,5*dy)
         notes = imgs2Notes[t]
         noteCounter = 0
         lN = len(notes)
         if verbose: print(t,"/",N," img")
         for tt in notes:
             note,start_img,end_img = tt
-            pitches, duration, volume,rest = note
-            volumeScaled = (volume-mv)/dv
-            pitchScaled = (pitches[0]-mp)/dp
+            start,pitches, duration, volume,rest = note
+            if rest==1:
+                continue
             #print(t,note)
-            pitch = pitches[0]
-            x,y = dx+int(pitchScaled*rb),dy+int(volumeScaled*rh)
-            #ff = FF(nn=[(volume//64)*m+k,(pitch//64)*m+k,2],m=m,k=k,aa=[(volume+pitch)/x*np.sin(t*np.pi*2/N)/2.0 for x in [128,128,128]])
-            #img = draw_curve(img,ff,(x,y),(0,0,0),rr=10,number_of_points = 1000) # 011.png
-            radius = compute_radius(pitch,volume,t,N,noteCounter,lN,start_img,end_img)
-            color = compute_color(pitch,volume,t,N,noteCounter,lN,start_img,end_img)
-            img = draw_circle(img,pp=(x,y), color = color, radius=radius)
-            noteCounter += 1
-        noteCounter = 0    
+            for pitch in pitches:
+                volumeScaled = (volume-mv)/dv
+                pitchScaled = (pitch-mp)/dp
+                x,y = dx+int(pitchScaled*rb),dy+int(volumeScaled*rh)
+                x0,y0 = [int(a) for a in X0[invPitchDict[pitch]]]
+                x = x0 + rb
+                y = y0 + rh
+                radius = compute_radius(pitch,volume,t,N,noteCounter,lN,start_img,end_img)
+                color = compute_color(pitch,volume,t,N,noteCounter,lN,start_img,end_img)
+                img = draw_circle(img,pp=(x,y), color = color, radius=radius)
+                noteCounter += 1
+        noteCounter = 0  
+        # zeichne helle kreise  
         for tt in notes:
             note,start_img,end_img = tt
-            pitches, duration, volume,rest = note
-            volumeScaled = (volume-mv)/dv
-            pitchScaled = (pitches[0]-mp)/dp
+            start,pitches, duration, volume,rest = note           
             #print(t,note)
-            pitch = pitches[0]
-            x,y = dx+int(pitchScaled*rb),dy+int(volumeScaled*rh)
-            #ff = FF(nn=[(volume//64)*m+k,(pitch//64)*m+k,2],m=m,k=k,aa=[(volume+pitch)/x*np.sin(t*np.pi*2/N)/2.0 for x in [128,128,128]])
-            #img = draw_curve(img,ff,(x,y),(0,0,0),rr=10,number_of_points = 1000) # 011.png
-            radius = compute_radius(pitch,volume,t,N,noteCounter,lN,start_img,end_img)
-            color = compute_color(pitch,volume,t,N,noteCounter,lN,start_img,end_img)
-            x0,y0 = dx+int(pitchScaled*rb0),dy+int(volumeScaled*rh0)
-            img = draw_circle(img,pp=(x0,y0),color=(255-color[0],255-color[1],255-color[2]),radius=radius)    
-            noteCounter += 1
+            if rest==1:
+                continue
+            for pitch in pitches:
+                pitchScaled = (pitch-mp)/dp
+                volumeScaled = (volume-mv)/dv
+                #ff = FF(nn=[(volume//64)*m+k,(pitch//64)*m+k,2],m=m,k=k,aa=[(volume+pitch)/x*np.sin(t*np.pi*2/N)/2.0 for x in [128,128,128]])
+                #img = draw_curve(img,ff,(x,y),(0,0,0),rr=10,number_of_points = 1000) # 011.png
+                radius = compute_radius(pitch,volume,t,N,noteCounter,lN,start_img,end_img)
+                color = compute_color(pitch,volume,t,N,noteCounter,lN,start_img,end_img)
+                x0,y0 = [int(a) for a in X0[invPitchDict[pitch]]]#dx+int(pitchScaled*breite),dy+int(volumeScaled*hoehe)
+                m,k=3,2
+                ff = FF(nn=[(volume//64)*m+k,(pitch//64)*m+k,2],m=m,k=k,aa=[(volume+pitch)/x*np.sin(t*np.pi*2/N)/2.0 for x in [128,128,128]])
+                img = draw_curve(img,ff,(x0,y0),color=(255-color[0],255-color[1],255-color[2]),rr=radius,number_of_points = 100)
+                #img = draw_circle(img,pp=(x0,y0),color=(255-color[0],255-color[1],255-color[2]),radius=radius)    
+                noteCounter += 1
         #labeled_img = color_img(img)
         #imgs.append(labeled_img)
         video.write(img)
     video.release()    
-    return True
+    return True    
 
 def make_video_with_voronoi(imgs2Notes,pitchSet,volumeSet,videoname="./opencv_videos/video.avi",fps=25,verbose=False):
     fourcc = cv.VideoWriter_fourcc(*"X264") 
@@ -324,13 +363,13 @@ def make_video_with_voronoi(imgs2Notes,pitchSet,volumeSet,videoname="./opencv_vi
     dp = Mp-mp
     if dp ==0:
         dp = 1        
-    dx = 0
-    dy = 0
+    dx = 10
+    dy = 10
     breite = 512-2*dx
     hoehe = 512-2*dy
     img = np.ones((512,512,3), np.uint8)*255 # white background
-    rb0 = np.random.randint(1,breite)
-    rh0 = np.random.randint(1,hoehe)
+    rb0 = np.random.randint(breite//2,breite)
+    rh0 = np.random.randint(hoehe//2,hoehe)
     size = img.shape
     rect = (0,0,size[1],size[0])
     
@@ -339,7 +378,10 @@ def make_video_with_voronoi(imgs2Notes,pitchSet,volumeSet,videoname="./opencv_vi
         #img = np.ones((512,512,3), np.uint8)*255 # white background
         rb = np.random.randint(1,breite)
         rh = np.random.randint(1,hoehe)
-        notes = imgs2Notes[t]
+        try:
+            notes = imgs2Notes[t]
+        except:
+            continue    
         noteCounter = 0
         lN = len(notes)
         if verbose: print(t,"/",N," img")
@@ -348,32 +390,43 @@ def make_video_with_voronoi(imgs2Notes,pitchSet,volumeSet,videoname="./opencv_vi
         noteCounter = 0
         for tt in notes:
             note,start_img,end_img = tt
-            pitches, duration, volume,rest = note
+            start,pitches, duration, volume,rest = note
             volumeScaled = (volume-mv)/dv
-            pitchScaled = (pitches[0]-mp)/dp
+            if rest==1:
+                continue
             #print(t,note)
-            pitch = pitches[0]
-            radius = compute_radius(pitch,volume,t,N,noteCounter,lN,start_img,end_img)
-            color = compute_color(pitch,volume,t,N,noteCounter,lN,start_img,end_img)
-            x0,y0 = dx+int(pitchScaled*rb0),dy+int(volumeScaled*rh0)
-            subdiv.insert((x0,y0))
-            img = draw_voronoi(img,subdiv,color)
-            noteCounter += 1
+            for pitch  in pitches:
+                pitchScaled = (pitch-mp)/dp
+                #print(pitchScaled)
+                radius = compute_radius(pitch,volume,t,N,noteCounter,lN,start_img,end_img)
+                color = compute_color(pitch,volume,t,N,noteCounter,lN,start_img,end_img)
+                color = (255-color[0],color[1],color[2])
+                x0,y0 = dx+int(pitchScaled*breite),dy+int(volumeScaled*hoehe)
+                subdiv.insert((x0,y0))
+                img = draw_voronoi(img,subdiv,color)
+                noteCounter += 1
         # draw circles    
         noteCounter = 0
         for tt in notes:
             note,start_img,end_img = tt
-            pitches, duration, volume,rest = note
+            start,pitches, duration, volume,rest = note
+            if rest==1:
+                continue
             volumeScaled = (volume-mv)/dv
-            pitchScaled = (pitches[0]-mp)/dp
-            #print(t,note)
-            pitch = pitches[0]
-            radius = compute_radius(pitch,volume,t,N,noteCounter,lN,start_img,end_img)
-            color = compute_color(pitch,volume,t,N,noteCounter,lN,start_img,end_img)
-            x0,y0 = dx+int(pitchScaled*rb0),dy+int(volumeScaled*rh0)
-            subdiv.insert((x0,y0))
-            img = draw_circle(img,pp=(x0,y0),color=(255-color[0],255-color[1],255-color[2]),radius=radius)    
-            noteCounter += 1
+            #print(t,note)        
+            for pitch in pitches:
+                pitchScaled = (pitch-mp)/dp
+                radius = compute_radius(pitch,volume,t,N,noteCounter,lN,start_img,end_img)
+                color = compute_color(pitch,volume,t,N,noteCounter,lN,start_img,end_img)
+                #print(pitchScaled)
+                x0,y0 = dx+int(pitchScaled*breite),dy+int(volumeScaled*hoehe)
+                #subdiv.insert((x0,y0))
+                img = draw_circle(img,pp=(x0,y0),color=(255-color[0],255-color[1],255-color[2]),radius=radius)    
+                ## symmetric objects:
+                ##m,k=3,2
+                ##ff = FF(nn=[(volume//64)*m+k,(pitch//64)*m+k,2],m=m,k=k,aa=[(volume+pitch)/x*np.sin(t*np.pi*2/N)/2.0 for x in [128,128,128]])
+                ##img = draw_curve(img,ff,(x0,y0),color,rr=2*radius,number_of_points = 1000)
+                noteCounter += 1
             
         #labeled_img = color_img(img)
         #imgs.append(labeled_img)
@@ -381,9 +434,153 @@ def make_video_with_voronoi(imgs2Notes,pitchSet,volumeSet,videoname="./opencv_vi
     video.release()    
     return True
 
+def kernPause(a1,a2):
+    return  1*(a1==a2)
+
+def kernPitch(k1,k2):
+    q = getRational(k2-k1)
+    a,b = q.numerator(),q.denominator()
+    return gcd(a,b)**2/(a*b)
+
+def kernDuration(k1,k2):
+    return  min(k1,k2)/max(k1,k2)
+
+def kernVolume(k1,k2):
+    return min(k1,k2)/max(k1,k2)
+
+def getRational(k):
+    alpha = 2**(1/12.0)
+    x = RDF(alpha**k).n(50)
+    return x.nearby_rational(max_error=0.01*x)
+
+
+def getCoordinatesOfPitchList(pitchList,dx,breite):
+    M0 = matrix([[kernPitch(t1,t2) for t1 in pitchList] for t2 in pitchList],ring=RDF)
+    if not M0.is_positive_definite():
+        M0+= matrix.identity(len(pitchSet))*0.1
+        
+    from sklearn.decomposition import PCA
+    from sklearn.decomposition import KernelPCA
+    from sklearn.preprocessing import MinMaxScaler
+    stdScaler = MinMaxScaler(feature_range=(dx,breite-dx))
+    KPCA = KernelPCA(2,kernel='precomputed')
+    
+    Ch0 = KPCA.fit_transform(np.array(M0))
+    
+    X0 = [x for x in 1.0*Ch0]
+    
+    print(X0)
+    
+    X0 = stdScaler.fit_transform(X0)
+    
+    print(X0)
+    
+    invPitchDict = dict(zip(pitchList,range(len(pitchList))))
+    return X0, invPitchDict
+
+def make_video_with_symmetry(imgs2Notes,pitchSet,volumeSet,videoname="./opencv_videos/video.avi",fps=25,verbose=False):
+    fourcc = cv.VideoWriter_fourcc(*"X264") 
+    height,width = 512,512
+    print(width,height,fps,videoname)
+    framesPerSecond = fps
+    video = cv.VideoWriter(videoname, fourcc, framesPerSecond, (width, height))
+    cnt = 0
+
+    print("volumeSet = ",volumeSet) 
+    print("pitchSet = ", pitchSet)
+    dx = 50
+    dy = 10
+    breite = 512-2*dx
+    hoehe = 512-2*dy
+    pitchList = sorted(list(pitchSet))
+    
+    X0,invPitchDict = getCoordinatesOfPitchList(pitchList,dx,breite)
+    
+    N = len(imgs2Notes.keys())
+    import random
+    mv = min(volumeSet)
+    Mv = max(volumeSet)
+    dv = Mv-mv
+    if dv ==0:
+        dv = 1
+    mp = min(pitchSet)
+    Mp = max(pitchSet)        
+    dp = Mp-mp
+    if dp ==0:
+        dp = 1        
+
+    #img = np.ones((512,512,3), np.uint8)*255 # white background
+    rb0 = np.random.randint(breite//2,breite)
+    rh0 = np.random.randint(hoehe//2,hoehe)
+    
+    
+    Npoints = len(pitchSet)*5
+    
+    for t in range(N):
+        img = np.ones((512,512,3), np.uint8)*255 # white background
+        
+        try:
+            notes = imgs2Notes[t]
+        except:
+            continue    
+        print(t,"/",N," img")
+        m,k=3,2
+        ln = len(notes)
+        ps = []
+        vs = []
+        ds = []
+        ts = []
+        size = img.shape
+        rect = (0,0,size[1],size[0])
+        subdiv = cv.Subdiv2D(rect)
+        points = []
+        for tt in notes:
+            note,start_img,end_img = tt
+            tScaled = (t-start_img+1)/(end_img-start_img+1)
+            start,pitches, duration, volume,rest = note
+            print(note)
+            pitchesScaled  = []
+            for p in pitches:          
+                pScaled = min(max(0,int((p-mp)/dp*Npoints)),Npoints-1)
+                pitchesScaled.append(p)
+                points.append([int(x) for x in X0[invPitchDict[p]].tolist()])
+            ps.append(pitchesScaled)    
+            vs.append(volume)
+            ds.append(duration)
+            ts.append(tScaled)
+        print("ts = ", ts)
+        print("points = ", points)  
+        print("ps = ", ps)  
+        nn = [(i)*m+k for i in range(4)]    
+        aa = [((i+1)/4.0) for i in range(4)]
+        print("nn = ", nn)
+        print("aa = ", aa)
+        #ff = FF(nn=nn,m=m,k=k,aa=aa)
+        #img,points = draw_curve(img,ff,(256,256),(0,0,0),rr=int(30*np.median(vs)/64),number_of_points = Npoints,return_points=True)
+        
+        for pp in X0:
+            print(pp)
+            subdiv.insert(tuple([int(x) for x in pp]))
+        img = draw_voronoi(img,subdiv,(128,32,255))            
+        c = 0
+        for i in range(ln):
+            pitchesScaled = ps[i]
+            for p in pitchesScaled:
+                radius = max(10,int((vs[i]+ts[i])/4))
+                color = (int(ts[i]*2*np.sin(2*np.pi*t/N)),int(ts[i]*vs[i]*2*np.sin(2*np.pi*t/N)),int(ts[i]*vs[i]*2*np.cos(2*np.pi*t/N)*128))
+                img = draw_circle(img,pp=points[c],color=color,radius=radius) 
+                c += 1
+
+        #img = color_img(img)
+        video.write(img)
+    video.release()    
+    return True
+
+
 def make_video(imgs2Notes,pitchSet,volumeSet,videoname="./opencv_videos/video.avi",fps=25,video_type="voronoi",verbose=False):
     if video_type=="circle": return make_video_with_circles(imgs2Notes,pitchSet,volumeSet,videoname,fps,verbose)
     if video_type=="voronoi": return make_video_with_voronoi(imgs2Notes,pitchSet,volumeSet,videoname,fps,verbose)
+    if video_type=="symmetry": return make_video_with_symmetry(imgs2Notes,pitchSet,volumeSet,videoname,fps,verbose)
     
 import sys
 
@@ -394,7 +591,7 @@ scores = parseXml(fp=midi)
 fps = int(sys.argv[2])
 bpm = int(sys.argv[3])
 print("fps = ", fps, "bpm = ", bpm)
-imgs2Notes,pitchSet,volumeSet = convertScore(scores,bpm=bpm,fps=fps)
+imgs2Notes,pitchSet,volumeSet = convertScore(scores,bpm=bpm,fps=fps,verbose=False)
 #print(volumeSet)
 #print(imgs2Notes)
 vn = sys.argv[4]

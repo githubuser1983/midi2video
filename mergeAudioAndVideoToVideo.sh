@@ -3,4 +3,4 @@
 # $3 merged.mp4
 # Beispiel:
 # ./imgAudioToVideo.sh image.jpg audio.mp3 video.mp4
-ffmpeg  -i $1 -i $2 -shortest -acodec copy -vcodec copy  $3
+ffmpeg  -i $1 -i $2 -shortest -c copy $3
